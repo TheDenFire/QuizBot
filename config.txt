@@ -1,0 +1,1 @@
+POSTGRES_URI = "postgres://avnadmin:AVNS_KngbJ27TaQj3-Ay2B2x@pg-tg-olyaoaoaooa-ee54.c.aivencloud.com:22975/defaultdb?sslmode=require"
