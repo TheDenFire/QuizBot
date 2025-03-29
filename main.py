@@ -1,4 +1,5 @@
 import logging
+import os
 import urllib
 
 import asyncpg
@@ -13,10 +14,12 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Данные подключения к PostgreSQL
-POSTGRES_URI = "postgres://avnadmin:AVNS_KngbJ27TaQj3-Ay2B2x@pg-tg-olyaoaoaooa-ee54.c.aivencloud.com:22975/defaultdb?sslmode=require"
+POSTGRES_URI = os.getenv("POSTGRESURL")
+DB_USER = os.getenv("DATABASE_USER")
+DB_PASSWORD = os.getenv("DATABASE_PASSWORD")
 
 # Инициализация бота
-bot = Bot(token="7530129072:AAFXp1UGzSAObJ-0kiDZUDNg19365qPncO8")
+bot = Bot(token=os.getenv("BOT_TOKEN"))
 dp = Dispatcher()
 
 class SurveyStates(StatesGroup):
@@ -24,8 +27,18 @@ class SurveyStates(StatesGroup):
 
 
 async def get_db():
-    return await asyncpg.connect(POSTGRES_URI)
-
+    try:
+        conn = await asyncpg.connect(
+            dsn=POSTGRES_URI,
+            user=DB_USER,
+            password=DB_PASSWORD,
+            timeout=10  # Установите таймаут 10 секунд
+        )
+        print("Успешное подключение к PostgreSQL!")
+        return conn
+    except Exception as e:
+        logger.error(f"Ошибка подключения: {e}")
+        raise
 
 # Создаем клавиатуру главного меню
 def main_menu_kb():
