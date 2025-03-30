@@ -1,13 +1,17 @@
-import logging
 import os
+import logging
+import traceback
 import urllib
-
+from datetime import datetime
 import asyncpg
 from aiogram import Bot, Dispatcher, types, F
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
-from aiogram.filters import Command, or_f
+from aiogram.filters import Command, or_f, state
+from aiogram.utils.chat_action import ChatActionSender
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
+from aiohttp import ClientError, TCPConnector
 
 # Настройка логгирования
 logging.basicConfig(level=logging.INFO)
@@ -98,7 +102,11 @@ async def show_profile(message: types.Message):
 
 
 async def show_user_profile(user_id: int, message: types.Message):
-    conn = await get_db()
+    async with ChatActionSender.typing(
+            chat_id=message.chat.id,
+            bot=message.bot
+    ):
+        conn = await get_db()
     try:
         user = await conn.fetchrow(
             "SELECT username, points FROM users WHERE id = $1",
@@ -159,10 +167,7 @@ async def show_rating(callback: types.CallbackQuery):
 
 # Обработчики для других кнопок
 @dp.message(F.text.in_({
-    "🛰 Космическая карта",
     "🌍 Экологические данные",
-    "📰 Новости",
-    "🗺️ Квест-трип по городу"
 }))
 async def handle_buttons(message: types.Message):
     await message.answer("TODO ⏳", reply_markup=main_menu_kb())
@@ -185,6 +190,644 @@ async def process_answer(message: types.Message, state: FSMContext):
 class QuizStates(StatesGroup):
     CATEGORY_SELECTION = State()
     ANSWERING_QUESTION = State()
+
+
+# Добавляем новые состояния
+class MapStates(StatesGroup):
+    MAIN_MENU = State()
+    SATELLITE_LIST = State()
+    SATELLITE_INFO = State()
+
+
+# Список спутников
+
+SATELLITES = {
+    "voyager": {
+        "name": "Voyager 1 (Вояджер-1)",
+        "description": (
+            "Voyager 1 (Вояджер-1) 🌌\n"
+            "🌍 Орбита: Вышел за пределы Солнечной системы (24 млрд км от Земли)\n"
+            "📊 Миссия: Исследование дальнего космоса и межзвездного пространства\n"
+            "📷 Последние данные: https://voyager.jpl.nasa.gov/\n"
+            "\n"
+            "🔗 Подробнее:(https://voyager.jpl.nasa.gov/)\n\n"
+        )
+    },
+    "hubble": {
+        "name": "Hubble Space Telescope (Хаббл)",
+        "description": (
+            "🔭 Легендарный космический телескоп NASA\n\n"
+            "• Запущен в 1990 году\n"
+            "• Диаметр зеркала: 2.4 м\n"
+            "• Орбита: 547 км\n"
+            "• Сделал >1.5 млн наблюдений"
+        )
+    },
+    "webb": {
+        "name": "James Webb Space Telescope (Джеймс Уэбб)",
+        "description": (
+            "🌟 Новейший инфракрасный телескоп\n\n"
+            "• Запущен в 2021 году\n"
+            "• Диаметр зеркала: 6.5 м\n"
+            "• Расположение: точка Лагранжа L2\n"
+            "• Изучает раннюю Вселенную"
+        )
+    }
+}
+
+def get_satellite_names():
+    return [sat["name"] for sat in SATELLITES.values()]
+
+def find_satellite_by_name(name: str):
+    return next((sat for sat in SATELLITES.values() if sat["name"] == name), None)
+
+# Клавиатура главного меню карты
+def map_menu_kb():
+    builder = ReplyKeyboardBuilder()
+    builder.add(types.KeyboardButton(text="Найти спутник"))
+    builder.add(types.KeyboardButton(text="Показать карту всех спутников"))
+    builder.add(types.KeyboardButton(text="Назад в главное меню"))
+    builder.adjust(2)
+    return builder.as_markup(resize_keyboard=True)
+
+
+def satellites_list_kb():
+    builder = ReplyKeyboardBuilder()
+    # Извлекаем только названия спутников
+    for sat in SATELLITES.values():
+        builder.add(types.KeyboardButton(text=sat["name"]))  # Используем ключ "name"
+    builder.add(types.KeyboardButton(text="Назад"))
+    builder.adjust(1)
+    return builder.as_markup(resize_keyboard=True)
+
+
+# Обработчик кнопки "Космическая карта"
+@dp.message(F.text == "🛰 Космическая карта")
+async def handle_space_map(message: types.Message, state: FSMContext):
+    await state.set_state(MapStates.MAIN_MENU)
+    await message.answer(
+        "🌌 Добро пожаловать в раздел космической карты!\n"
+        "Здесь вы можете отслеживать спутники SR Space и другие объекты.",
+        reply_markup=map_menu_kb()
+    )
+
+
+# Обработчик кнопки "Найти спутник"
+@dp.message(F.text == "Найти спутник")
+async def search_satellite(message: types.Message, state: FSMContext):
+    current_state = await state.get_state()
+    if current_state != MapStates.MAIN_MENU:
+        await message.answer("Пожалуйста, вернитесь в главное меню карты")
+        return
+
+    await state.set_state(MapStates.SATELLITE_LIST)
+    await message.answer(
+        "🔍 Выберите спутник из списка:",
+        reply_markup=satellites_list_kb()
+    )
+
+
+@dp.message(F.text.in_(get_satellite_names()), MapStates.SATELLITE_LIST)
+async def show_satellite_info(message: types.Message, state: FSMContext):
+    satellite = find_satellite_by_name(message.text)
+    if not satellite:
+        await message.answer("🚫 Спутник не найден")
+        return
+
+    await state.set_state(MapStates.SATELLITE_INFO)
+    await state.update_data(current_satellite=satellite)
+
+    builder = ReplyKeyboardBuilder()
+    builder.add(types.KeyboardButton(text="Назад к списку"))
+
+    # Отправляем только текст
+    await message.answer(
+        f"🛰 {satellite['name']}\n\n{satellite['description']}",
+        reply_markup=builder.as_markup(resize_keyboard=True)
+    )
+
+
+# Обработчик кнопки "Назад"
+@dp.message(F.text == "Назад к списку", MapStates.SATELLITE_INFO)
+async def back_to_list(message: types.Message, state: FSMContext):
+    await state.set_state(MapStates.SATELLITE_LIST)
+    await message.answer(
+        "🔍 Выберите спутник из списка:",
+        reply_markup=satellites_list_kb()
+    )
+
+
+# Обработчик кнопки "Назад в главное меню"
+@dp.message(F.text == "Назад", MapStates.SATELLITE_LIST)
+async def back_to_map_menu(message: types.Message, state: FSMContext):
+    await state.set_state(MapStates.MAIN_MENU)
+    await message.answer(
+        "Возвращаемся в меню карты:",
+        reply_markup=map_menu_kb()
+    )
+
+@dp.message(F.text == "Показать карту всех спутников", MapStates.MAIN_MENU)
+async def handle_back_to_main_menu(message: types.Message, state: FSMContext):
+    await state.set_state(MapStates.MAIN_MENU)
+    await message.answer(
+        "🛰 Глобальная карта спутников\n"
+        "\n"
+        "🔍 Здесь можно увидеть все активные спутники в реальном времени!\n"
+        "📡 Карта обновляется автоматически и показывает траектории движения.\n"
+        "\n"
+        "🔗https://spacegid.com/media/space_sattelite/",
+        reply_markup=main_menu_kb()
+    )
+
+@dp.message(F.text == "Назад в главное меню")
+async def handle_back_to_main_menu(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer(
+        "Вы вернулись в главное меню:",
+        reply_markup=main_menu_kb()
+    )
+
+# Обновляем старый обработчик для кнопки "Космическая карта"
+@dp.message(F.text.in_({"🛰 Космическая карта"}))
+async def handle_buttons(message: types.Message):
+    await handle_space_map(message, message.bot, message.chat.id)
+
+
+# ... предыдущий импорт ...
+from aiogram.types import URLInputFile, InlineKeyboardButton
+
+
+# Добавляем новые состояния
+class NewsStates(StatesGroup):
+    VIEWING_NEWS = State()
+
+
+class AdminNewsStates(StatesGroup):
+    ENTER_TEXT = State()
+    ENTER_PHOTO = State()
+    CONFIRMATION = State()
+
+
+# ... остальной существующий код ...
+
+# region News Section
+
+async def get_news_list():
+    conn = await get_db()
+    try:
+        return await conn.fetch("SELECT * FROM news ORDER BY created_at DESC")
+    except Exception as e:
+        logger.error(f"Ошибка получения новостей: {e}")
+        return []
+    finally:
+        await conn.close()
+
+
+
+
+@dp.message(F.text == "📰 Новости")
+async def handle_news(message: types.Message, state: FSMContext):
+    async with ChatActionSender.typing(
+            chat_id=message.chat.id,
+            bot=message.bot
+    ):
+        news_list = await get_news_list()
+    if not news_list:
+        await message.answer("📭 Пока нет новостей. Следите за обновлениями!")
+        return
+
+    await state.set_state(NewsStates.VIEWING_NEWS)
+    await state.update_data(news_list=news_list, current_index=0)
+    await show_news(message.from_user.id, state)
+
+
+async def show_news(user_id: int, state: FSMContext):
+    data = await state.get_data()
+    news_list = data['news_list']
+    current_index = data['current_index']
+
+    try:
+        news_item = news_list[current_index]
+        text = f"📰 *{news_item['text']}\n\n*{news_item['created_at'].strftime('%d.%m.%Y')}"
+
+        builder = InlineKeyboardBuilder()
+        if current_index < len(news_list) - 1:
+            builder.button(text="◀️ Предыдущая", callback_data="prev_news")
+        builder.button(text="🏠 В меню", callback_data="news_back_to_menu")
+
+        send_method = bot.send_photo if news_item['photo'] else bot.send_message
+        content = {
+            'chat_id': user_id,
+            'caption' if news_item['photo'] else 'text': text,
+            'parse_mode': "Markdown",
+            'reply_markup': builder.as_markup()
+        }
+
+        if news_item['photo']:
+            if news_item['photo'].startswith(('http', 'https')):
+                content['photo'] = URLInputFile(news_item['photo'])
+            else:
+                content['photo'] = news_item['photo']
+
+        message = await send_method(**content)
+        await state.update_data(last_message_id=message.message_id)
+
+    except Exception as e:
+        logger.error(f"News display error: {str(e)}")
+        await bot.send_message(
+            chat_id=user_id,
+            text="⚠️ Не удалось загрузить новость. Попробуйте позже."
+        )
+
+
+@dp.callback_query(NewsStates.VIEWING_NEWS, F.data == "prev_news")
+async def prev_news(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    current_index = data['current_index']
+
+    if current_index >= len(data['news_list']) - 1:
+        await callback.answer("Это последняя новость")
+        return
+
+    try:
+        await callback.message.delete()
+    except TelegramBadRequest:
+        pass
+
+    await state.update_data(current_index=current_index + 1)
+    await show_news(callback.from_user.id, state)
+    await callback.answer()
+
+
+@dp.callback_query(NewsStates.VIEWING_NEWS, F.data == "news_back_to_menu")
+async def news_back_to_menu(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.delete()
+    await callback.message.answer("Главное меню:", reply_markup=main_menu_kb())
+    await callback.answer()
+
+
+# endregion
+
+# region Admin News Management
+
+async def is_admin(user_id: int):
+    conn = await get_db()
+    try:
+        user = await conn.fetchrow("SELECT role FROM users WHERE id = $1", user_id)
+        return user and user['role'] == 'admin'
+    except Exception as e:
+        logger.error(f"Ошибка проверки прав: {e}")
+        return False
+    finally:
+        await conn.close()
+
+
+@dp.message(Command("add_news"))
+async def add_news_start(message: types.Message, state: FSMContext):
+    if not await is_admin(message.from_user.id):
+        await message.answer("⛔ У вас нет прав для выполнения этой команды")
+        return
+
+    await state.set_state(AdminNewsStates.ENTER_TEXT)
+    await message.answer("📝 Введите текст новости:")
+
+
+@dp.message(AdminNewsStates.ENTER_TEXT)
+async def process_news_text(message: types.Message, state: FSMContext):
+    await state.update_data(text=message.html_text)
+    await state.set_state(AdminNewsStates.ENTER_PHOTO)
+    await message.answer("📸 Пришлите фото для новости (или нажмите /skip чтобы пропустить)")
+
+
+@dp.message(AdminNewsStates.ENTER_PHOTO, F.photo)
+async def process_news_photo(message: types.Message, state: FSMContext):
+    photo = message.photo[-1].file_id
+    await state.update_data(photo=photo)
+    await state.set_state(AdminNewsStates.CONFIRMATION)
+    await request_confirmation(message, state)
+
+
+@dp.message(AdminNewsStates.ENTER_PHOTO, Command("skip"))
+async def skip_news_photo(message: types.Message, state: FSMContext):
+    await state.update_data(photo=None)
+    await state.set_state(AdminNewsStates.CONFIRMATION)
+    await request_confirmation(message, state)
+
+
+async def request_confirmation(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ Опубликовать", callback_data="confirm_news")
+    builder.button(text="❌ Отменить", callback_data="cancel_news")
+
+    text = f"📝 *Текст новости:*\n{data['text']}\n\n"
+    text += f"🖼 *Фото:* {'есть' if data.get('photo') else 'нет'}"
+
+    if data.get('photo'):
+        await message.answer_photo(
+            photo=data['photo'],
+            caption=text,
+            reply_markup=builder.as_markup(),
+            parse_mode="Markdown"
+        )
+    else:
+        await message.answer(
+            text=text,
+            reply_markup=builder.as_markup(),
+            parse_mode="Markdown"
+        )
+
+
+# region Improved News Management
+
+async def send_news_to_user(user_id: int, news_item: asyncpg.Record):
+    max_retries = 5
+    backoff_factor = 0.5
+
+    for attempt in range(max_retries):
+        try:
+            text = f"📰 *{news_item['created_at'].strftime('%d.%m.%Y %H:%M')}*\n\n{news_item['text']}"
+
+            if news_item['photo']:
+                # Отправляем используя file_id напрямую
+                await bot.send_photo(
+                    chat_id=user_id,
+                    photo=news_item['photo'],
+                    caption=text,
+                    parse_mode="Markdown"
+                )
+            else:
+                await bot.send_message(
+                    chat_id=user_id,
+                    text=text,
+                    parse_mode="Markdown"
+                )
+            return True
+
+        except TelegramAPIError as e:
+            wait_time = backoff_factor * (2 ** attempt)
+            logger.warning(f"Retry {attempt + 1}/{max_retries} for user {user_id} in {wait_time:.1f}s")
+            await asyncio.sleep(wait_time)
+
+        except Exception as e:
+            logger.error(f"Critical error for user {user_id}: {type(e).__name__} - {str(e)}")
+            return False
+
+    logger.error(f"Failed to send news to user {user_id} after {max_retries} attempts")
+    return False
+
+
+from aiogram.exceptions import TelegramBadRequest, TelegramAPIError
+
+
+@dp.callback_query(AdminNewsStates.CONFIRMATION, F.data == "confirm_news")
+async def confirm_news_publish(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    conn = await get_db()
+
+    try:
+        # Сохраняем новость с проверкой размера текста
+        if len(data['text']) > 4000:
+            raise ValueError("Text too long (max 4000 chars)")
+
+        news = await conn.fetchrow(
+            """INSERT INTO news (admin_id, text, photo)
+            VALUES ($1, $2, $3)
+            RETURNING *""",
+            callback.from_user.id,
+            data['text'][:4000],  # Обрезаем текст при необходимости
+            data.get('photo')[:512] if data.get('photo') else None  # Ограничение длины URL
+        )
+
+        # Асинхронная рассылка с ограничением параллелизма
+        users = await conn.fetch("SELECT id FROM users WHERE NOT is_banned")
+        semaphore = asyncio.Semaphore(10)  # Максимум 10 одновременных отправок
+
+        async def send_task(user):
+            async with semaphore:
+                return await send_news_to_user(user['id'], news)
+
+        results = await asyncio.gather(*[send_task(user) for user in users])
+
+        success_count = sum(results)
+        failed_count = len(results) - success_count
+
+        status_message = (
+            f"📊 Статус рассылки:\n"
+            f"• Успешно: {success_count}\n"
+            f"• Не доставлено: {failed_count}\n"
+            f"• Всего получателей: {len(users)}"
+        )
+
+        # Отправка отчета администратору
+        report_text = status_message + f"\n\nТекст новости:\n{data['text'][:300]}..."
+
+        try:
+            if data.get('photo'):
+                await callback.message.edit_caption(caption=report_text)
+            else:
+                await callback.message.edit_text(text=report_text)
+        except TelegramBadRequest as e:
+            if "message is not modified" in str(e):
+                pass
+            else:
+                raise
+
+        # Логирование в отдельную таблицу
+        await conn.execute(
+            """INSERT INTO news_delivery_logs 
+            (news_id, total_users, success_count) 
+            VALUES ($1, $2, $3)""",
+            news['id'], len(users), success_count
+        )
+
+    except ValueError as e:
+        error_msg = f"❌ Ошибка: {str(e)}"
+    except Exception as e:
+        error_msg = "⚠️ Ошибка публикации! Проверьте данные и подключение"
+        logger.error(f"Publish error: {traceback.format_exc()}")
+    finally:
+        await conn.close()
+        await state.clear()
+
+
+# endregion
+
+@dp.callback_query(AdminNewsStates.CONFIRMATION, F.data == "cancel_news")
+async def cancel_news_publish(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    if callback.message.photo:
+        await callback.message.edit_caption("❌ Создание новости отменено")
+    else:
+        await callback.message.edit_text("❌ Создание новости отменено")
+    await callback.answer()
+
+
+class QuestStates(StatesGroup):
+    CITY_INPUT = State()
+    CONFIRMATION = State()
+    QUEST_IN_PROGRESS = State()
+    WAITING_PHOTO = State()
+
+
+# Обработчик кнопки "Квест-трип по городу"
+@dp.message(F.text == "🗺️ Квест-трип по городу")
+async def start_quest(message: types.Message, state: FSMContext):
+    await state.set_state(QuestStates.CITY_INPUT)
+    await message.answer(
+        "Приветствую тебя на пути изучения российской космонавтики! 🚀\n\n"
+        "Тебя ждет путешествие по млечному пути космической истории внутри твоего города.\n\n"
+        "Введи его название:"
+    )
+
+
+# Обработчик ввода города
+@dp.message(QuestStates.CITY_INPUT)
+async def process_city(message: types.Message, state: FSMContext):
+    await state.update_data(city=message.text)
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🚀 Запуск", callback_data="start_quest_confirmed")
+
+    await message.answer(
+        f"Прекрасно! Техника настроена, ракета готова к запуску!\n"
+        f"Мы посетим 6 мест, решим 5 загадок и вместе погрузимся в космос твоего города. "
+        f"А по окончанию путешествия тебя ждет подарок! Готов отправиться?",
+        reply_markup=builder.as_markup()
+    )
+    await state.set_state(QuestStates.CONFIRMATION)
+
+
+# Обработчик подтверждения начала квеста
+@dp.callback_query(QuestStates.CONFIRMATION, F.data == "start_quest_confirmed")
+async def start_quest_confirmed(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.delete()
+    await send_quest_task(callback.message, state, task_number=1)
+    await state.set_state(QuestStates.QUEST_IN_PROGRESS)
+
+
+# Функция отправки задания
+async def send_quest_task(message: types.Message, state: FSMContext, task_number: int):
+    tasks = {
+        1: {
+            "text": "Он сказал: «Поехали»! – И вот первое задание квеста:\n\n"
+                    "🗽 Задание 1: Космический Памятник\n\n"
+                    "Найди в городе памятник или монумент, связанный с космонавтами или учеными.",
+            "button": "Нашел ✅"
+        }
+    }
+
+    task = tasks.get(task_number)
+    if not task:
+        return await finish_quest(message, state)
+
+    builder = ReplyKeyboardBuilder()
+    builder.button(text=task["button"])
+
+    await message.answer(
+        task["text"],
+        reply_markup=builder.as_markup(resize_keyboard=True)
+    )
+    await state.update_data(current_task=task_number)
+
+
+# Обработчик кнопки "Нашел ✅"
+@dp.message(F.text == "Нашел ✅", QuestStates.QUEST_IN_PROGRESS)
+async def found_monument(message: types.Message, state: FSMContext):
+    await state.set_state(QuestStates.WAITING_PHOTO)
+    await message.answer(
+        "Теперь сделай фотографию у памятника, отправь ее мне с ответом на вопрос: "
+        "«Кто изображен на памятнике и что он сделал для космонавтики?»",
+        reply_markup=types.ReplyKeyboardRemove()
+    )
+
+
+# Обработчик фото и ответа
+@dp.message(QuestStates.WAITING_PHOTO, F.photo)
+async def process_quest_answer(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+
+    # Сохраняем в базу данных
+    conn = await get_db()
+    try:
+        await conn.execute(
+            "INSERT INTO quest_submissions "
+            "(user_id, city, task_number, photo_id, answer, submission_time) "
+            "VALUES ($1, $2, $3, $4, $5, $6)",
+            message.from_user.id,
+            data['city'],
+            data['current_task'],
+            message.photo[-1].file_id,
+            message.caption or "",
+            datetime.now()
+        )
+
+        # Начисляем баллы
+        await conn.execute(
+            "UPDATE users SET points = points + 10 WHERE id = $1",
+            message.from_user.id
+        )
+    finally:
+        await conn.close()
+
+    # Уведомляем админов
+    await notify_admins(message, state)
+
+    await message.answer(
+        "✅ Отлично! Ты прошел первый этап квеста!\n"
+        "Следующее задание появится совсем скоро...",
+        reply_markup=main_menu_kb()
+    )
+    await state.clear()
+
+
+# Функция уведомления админов
+async def notify_admins(message: types.Message, state: FSMContext):
+    data = await state.get_data()  # Теперь state передается как аргумент
+
+    conn = await get_db()
+    try:
+        admins = await conn.fetch(
+            "SELECT id FROM users WHERE role = 'admin'"
+        )
+
+        report_text = (
+            "🚨 Новое выполнение квеста!\n"
+            f"👤 Пользователь: @{message.from_user.username}\n"
+            f"🏙 Город: {data['city']}\n"  # Берем city из данных состояния
+            f"📷 Фото: {message.photo[-1].file_id}"
+        )
+
+        for admin in admins:
+            try:
+                await bot.send_photo(
+                    chat_id=admin['id'],
+                    photo=message.photo[-1].file_id,
+                    caption=report_text
+                )
+            except Exception as e:
+                logger.error(f"Error sending to admin {admin['id']}: {e}")
+
+    finally:
+        await conn.close()
+
+
+# Функция завершения квеста
+async def finish_quest(message: types.Message, state: FSMContext):
+    await message.answer(
+        "🎉 Поздравляем! Ты успешно завершил квест-трип!\n"
+        "Твой подарок: +50 баллов в профиль!\n"
+        "Следующий квест появится совсем скоро...",
+        reply_markup=main_menu_kb()
+    )
+    await state.clear()
+
+
+
+
+
+
 
 
 quiz_categories = {
@@ -272,15 +915,33 @@ async def start_quiz(message: types.Message, state: FSMContext):
 
 async def show_category_selection(message: types.Message, state: FSMContext):
     data = await state.get_data()
+    user_id = message.chat.id
+    completed = await QuizManager.get_completed_categories(user_id)
+    print(f"show_category_selection: User ID from message: {user_id}")
+    print(f"[DEBUG] Completed categories: {completed}")
+
     builder = InlineKeyboardBuilder()
 
     for category_id, category in quiz_categories.items():
-        if category_id not in data.get('used_categories', []):
-            encoded_id = urllib.parse.quote_plus(category_id)
-            builder.button(
-                text=category["title"],
-                callback_data=f"cat_{encoded_id}"
+        is_completed = category_id in completed
+        print(f"[DEBUG] Category {category_id} completed: {is_completed}")
+
+        safe_category_id = category_id.replace(" ", "_").lower()
+
+        button_text = f"{'✅ ' if is_completed else ''}{category['title']}"
+
+        builder.add(
+            types.InlineKeyboardButton(
+                text=button_text,
+                callback_data=f"cat_{safe_category_id}"  # Используем нормализованный ID
             )
+        )
+
+    # builder.row(types.InlineKeyboardButton(
+    #     text="⬅️ Назад",
+    #     callback_data="back_to_main"
+    # ))
+
 
     builder.adjust(1)
 
@@ -297,6 +958,9 @@ async def show_category_selection(message: types.Message, state: FSMContext):
         else:
             msg = await message.answer(text, reply_markup=builder.as_markup())
             await state.update_data(last_message_id=msg.message_id)
+
+        if not builder.buttons:
+            text = "🎉 Вы прошли все категории!"
 
         await state.set_state(QuizStates.CATEGORY_SELECTION)
 
@@ -371,54 +1035,64 @@ async def get_user_points(user_id: int) -> int:
 
 async def complete_category(message: types.Message, state: FSMContext):
     data = await state.get_data()
-    used = data.get('used_categories', [])
-    category_id = data['current_category']
+    category_id = data.get('current_category')
 
-    if category_id not in used:
-        used.append(category_id)
-        await state.update_data(
-            used_categories=used,
-            current_category=None,
-            current_question_index=0
-        )
+    if category_id:
+        await QuizManager.complete_category(message.chat.id, category_id)
 
     await show_category_selection(message, state)
 
 
-@dp.callback_query(QuizStates.CATEGORY_SELECTION, F.data.startswith("cat_"))
-async def select_category(callback: types.CallbackQuery, state: FSMContext):
-    try:
-        # Декодируем category_id
-        encoded_category = callback.data.split("_", 1)[1]
-        category_id = urllib.parse.unquote_plus(encoded_category)
+@dp.message(Command("resetquiz"))
+async def resetquiz_command(message: types.Message):
+    # Получаем информацию о пользователе из БД
+    conn = await get_db()
+    user = await conn.fetchrow(
+        "SELECT role FROM users WHERE id = $1",
+        message.from_user.id
+    )
 
-        logger.debug(f"Selected category ID: {category_id}")
+    if not user or user['role'] != 'admin':
+        return await message.answer("⛔ Недостаточно прав!")
 
-        if category_id not in quiz_categories:
-            logger.error(f"Category {category_id} not found in quiz_categories")
-            await callback.answer("Категория не найдена!")
-            return
+    await QuizManager.reset_all_progress()
+    await message.answer("♻ Прогресс всех пользователей сброшен!")
 
-        # Обновляем состояние
-        await state.update_data(
-            current_category=category_id,
-            current_question_index=0,
-            last_message_id=None
-        )
 
-        # Удаляем предыдущее сообщение
-        try:
-            await callback.message.delete()
-        except Exception as e:
-            logger.error(f"Error deleting message: {e}")
-
-        # Запускаем первый вопрос
-        await ask_current_question(callback.message, state)
-        await callback.answer()
-
-    except Exception as e:
-        logger.error(f"Error in select_category: {str(e)}", exc_info=True)
-        await callback.answer("⚠️ Ошибка при выборе категории")
+# @dp.callback_query(QuizStates.CATEGORY_SELECTION, F.data.startswith("cat_"))
+# async def select_category(callback: types.CallbackQuery, state: FSMContext):
+#     try:
+#         # Декодируем category_id
+#         encoded_category = callback.data.split("_", 1)[1]
+#         category_id = urllib.parse.unquote_plus(encoded_category)
+#
+#         logger.debug(f"Selected category ID: {category_id}")
+#
+#         if category_id not in quiz_categories:
+#             logger.error(f"Category {category_id} not found in quiz_categories")
+#             await callback.answer("Категория не найдена!")
+#             return
+#
+#         # Обновляем состояние
+#         await state.update_data(
+#             current_category=category_id,
+#             current_question_index=0,
+#             last_message_id=None
+#         )
+#
+#         # Удаляем предыдущее сообщение
+#         try:
+#             await callback.message.delete()
+#         except Exception as e:
+#             logger.error(f"Error deleting message: {e}")
+#
+#         # Запускаем первый вопрос
+#         await ask_current_question(callback.message, state)
+#         await callback.answer()
+#
+#     except Exception as e:
+#         logger.error(f"Error in select_category: {str(e)}", exc_info=True)
+#         await callback.answer("⚠️ Ошибка при выборе категории")
 
 
 async def ask_first_question(message: types.Message, state: FSMContext):
@@ -488,12 +1162,17 @@ async def handle_category_selection(callback: types.CallbackQuery, state: FSMCon
         # Получаем и декодируем category_id
         encoded_category = callback.data.split("_", 1)[1]
         category_id = urllib.parse.unquote_plus(encoded_category)
+        completed = await QuizManager.get_completed_categories(callback.from_user.id)
+        print(f"User ID from message: {callback.from_user.id}")
 
         logger.info(f"Selected category: {category_id}")
 
         # Проверяем существование категории
+        if category_id in completed:
+            await callback.answer("❌ Категория уже пройдена!")
+            return
+
         if category_id not in quiz_categories:
-            logger.error(f"Category not found: {category_id}")
             await callback.answer("⚠️ Категория не найдена")
             return
 
@@ -520,6 +1199,31 @@ async def handle_category_selection(callback: types.CallbackQuery, state: FSMCon
         await callback.answer("⚠️ Ошибка при выборе категории")
 
 
+class QuizManager:
+    @staticmethod
+    async def get_completed_categories(user_id: int) -> set:
+        conn = await get_db()
+        result = await conn.fetch(
+            "SELECT category_id FROM completed_categories WHERE user_id = $1",
+            user_id
+        )
+        return {row['category_id'] for row in result}
+
+    @staticmethod
+    async def complete_category(user_id: int, category_id: str):
+        conn = await get_db()
+        await conn.execute(
+            """INSERT INTO completed_categories (user_id, category_id)
+               VALUES ($1::BIGINT, $2::VARCHAR)
+               ON CONFLICT DO NOTHING""",
+            user_id, category_id
+        )
+
+    @staticmethod
+    async def reset_all_progress():
+        conn = await get_db()
+        await conn.execute("TRUNCATE TABLE completed_categories")
+
 @dp.message()
 async def unknown_message(message: types.Message):
     logger.warning(f"Unhandled message: {message.text}")
@@ -536,6 +1240,23 @@ async def main():
                 points INTEGER DEFAULT 0
             )
         ''')
+        # Создаем таблицу quest_submissions
+        await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS quest_submissions (
+                        id SERIAL PRIMARY KEY,
+                        user_id BIGINT REFERENCES users(id),
+                        city TEXT,
+                        task_number INTEGER,
+                        photo_id TEXT,
+                        answer TEXT,
+                        submission_time TIMESTAMP
+                    )
+                ''')
+        # для учета пройденных категорий
+        await conn.execute('''CREATE TABLE IF NOT EXISTS completed_categories
+             (user_id INTEGER, 
+              category_id TEXT,
+              PRIMARY KEY (user_id, category_id))''')
     finally:
         await conn.close()
 
