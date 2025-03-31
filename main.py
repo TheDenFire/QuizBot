@@ -920,7 +920,7 @@ quiz_categories = {
 }
 
 
-@dp.message(F.text == "🎓 Викторина о космосе", Command("quiz"))
+@dp.message(F.text == "🎓 Викторина о космосе")
 async def start_quiz(message: types.Message, state: FSMContext):
     data = await state.get_data()
 
