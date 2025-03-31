@@ -5,6 +5,7 @@ import urllib
 import asyncpg
 from aiogram import Bot, Dispatcher, types, F, Router, filters
 from aiogram.client import bot
+from aiogram.fsm import state
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.filters import Command, or_f
@@ -166,6 +167,13 @@ async def show_rating(callback: types.CallbackQuery):
     await callback.message.answer(rating_text)
     await callback.answer()
 
+class EcoState(StatesGroup):
+    MAIN_MENU = State()
+    WILDFIRES = State()
+    AIR_QUALITY = State()
+    CLIMATE = State()
+    MOSCOW_CLIMATE = State()
+
 # Клавиатура для изменения климата
 def climate_keyboard():
     builder = InlineKeyboardBuilder()
@@ -236,7 +244,8 @@ def eco_categories_kb():
 
 # Обработчик для кнопки "Экологические данные"
 @dp.message(F.text == "🌍 Экологические данные")
-async def handle_eco_data(message: types.Message):
+async def handle_eco_data(message: types.Message, state: FSMContext):
+    await state.set_state(EcoState.MAIN_MENU)
     await message.answer(
         "🌍 Экологический мониторинг\n\n"
         "Я могу показать данные о состоянии окружающей среды в реальном времени! Выберите, что вас интересует:"
@@ -276,7 +285,8 @@ def moscow_climate_kb():
 
 # Обработчики
 @dp.message(F.text == "Лесные пожары")
-async def handle_wildfires(message: types.Message):
+async def handle_wildfires(message: types.Message, state: FSMContext):
+    await state.set_state(EcoState.WILDFIRES)
     await message.answer(
         "🔥 Мониторинг лесных пожаров\n\n"
         "Актуальные данные о лесных пожарах:",
@@ -284,7 +294,8 @@ async def handle_wildfires(message: types.Message):
     )
 
 @dp.message(F.text == "Загрязнение воздуха")
-async def handle_air_pollution(message: types.Message):
+async def handle_air_pollution(message: types.Message, state: FSMContext):
+    await state.set_state(EcoState.AIR_QUALITY)
     await message.answer(
         "🌫️ Качество воздуха\n\n"
         "Я могу показать актуальную информацию о качестве воздуха:",
@@ -292,7 +303,8 @@ async def handle_air_pollution(message: types.Message):
     )
 
 @dp.message(F.text == "Изменение климата")
-async def handle_climate(message: types.Message):
+async def handle_climate(message: types.Message, state: FSMContext):
+    await state.set_state(EcoState.CLIMATE)
     await message.answer(
         "🌡 Данные о климате\n\n"
         "🌍 Я могу показать изменения температуры и климатические тренды:",
@@ -300,7 +312,8 @@ async def handle_climate(message: types.Message):
     )
 
 @dp.message(F.text == "Климат в Москве")
-async def handle_moscow_climate(message: types.Message):
+async def handle_moscow_climate(message: types.Message, state: FSMContext):
+    await state.set_state(EcoState.MOSCOW_CLIMATE)
     response = (
         "🌆 Климатические изменения в Москве\n\n"
         "📅 Последние 5 лет:\n\n"
@@ -332,17 +345,23 @@ def back_to_eco_kb() -> types.InlineKeyboardMarkup:
     )
     return builder.as_markup()
 
-@dp.callback_query(F.data == BACK_ECO_DATA)
-async def handle_eco_back(callback: types.CallbackQuery):
-    try:
-        await callback.message.edit_text(
-            "🌍 Экологический мониторинг\nВыберите категорию:",
-            reply_markup=eco_categories_kb()
-        )
-        await callback.answer()
-    except Exception as e:
-        await callback.answer("⚠️ Ошибка при возврате в меню", show_alert=True)
-        logging.error(f"Back error: {e}")
+
+@dp.callback_query(F.data == "eco_back")
+async def handle_eco_back(callback: types.CallbackQuery, state: FSMContext):
+    current_state = await state.get_state()
+
+    if current_state == EcoState.WILDFIRES:
+        await handle_eco_data(callback.message, state)
+    elif current_state == EcoState.AIR_QUALITY:
+        await handle_eco_data(callback.message, state)
+    elif current_state == EcoState.CLIMATE:
+        await handle_eco_data(callback.message, state)
+    elif current_state == EcoState.MOSCOW_CLIMATE:
+        await handle_eco_data(callback.message, state)
+    else:
+        await handle_eco_data(callback.message, state)
+
+    await callback.answer()
 
 # Обработчик кнопки "Назад" для всех уровней
 @dp.message(F.text == "⬅️ Назад")
