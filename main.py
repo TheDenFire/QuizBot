@@ -905,6 +905,13 @@ quiz_categories = {
 
 @dp.message(F.text == "🎓 Викторина о космосе")
 async def start_quiz(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+
+    # Проверяем активна ли категория
+    if data.get('used_categories'):
+        await message.answer("🚫 Завершите текущую категорию сначала!")
+        return
+
     await state.update_data(
         used_categories=[],
         current_category=None,
@@ -917,12 +924,14 @@ async def show_category_selection(message: types.Message, state: FSMContext):
     data = await state.get_data()
     user_id = message.chat.id
     completed = await QuizManager.get_completed_categories(user_id)
+    used_categories = data.get('used_categories', [])  # Добавляем получение used_categories
     print(f"show_category_selection: User ID from message: {user_id}")
     print(f"[DEBUG] Completed categories: {completed}")
 
     builder = InlineKeyboardBuilder()
 
     for category_id, category in quiz_categories.items():
+        is_used = category_id in used_categories
         is_completed = category_id in completed
         print(f"[DEBUG] Category {category_id} completed: {is_completed}")
 
@@ -930,10 +939,10 @@ async def show_category_selection(message: types.Message, state: FSMContext):
 
         button_text = f"{'✅ ' if is_completed else ''}{category['title']}"
 
-        builder.add(
-            types.InlineKeyboardButton(
-                text=button_text,
-                callback_data=f"cat_{safe_category_id}"  # Используем нормализованный ID
+        # Если категория уже используется, делаем кнопку неактивной
+        builder.add(types.InlineKeyboardButton(
+            text=button_text,
+            callback_data=f"cat_{safe_category_id}" if not is_used else "ignore", # Используем нормализованный ID
             )
         )
 
@@ -968,6 +977,10 @@ async def show_category_selection(message: types.Message, state: FSMContext):
         logger.error(f"Error showing categories: {str(e)}")
         await message.answer("⚠️ Ошибка при загрузке категорий")
 
+@dp.callback_query(F.data == "ignore")
+async def handle_ignore(callback: types.CallbackQuery):
+    await callback.answer("🚫 Эта категория уже начата!", show_alert=True)
+
 @dp.callback_query(QuizStates.ANSWERING_QUESTION, F.data.startswith("ans_"))
 async def handle_answer(callback: types.CallbackQuery, state: FSMContext):
     try:
@@ -976,7 +989,8 @@ async def handle_answer(callback: types.CallbackQuery, state: FSMContext):
         question_index = data['current_question_index']
 
         category = quiz_categories[category_id]
-        question = category["questions"][question_index]
+        questions = category["questions"]
+        question = questions[question_index]
 
         # Удаляем кнопки
         try:
@@ -1007,9 +1021,11 @@ async def handle_answer(callback: types.CallbackQuery, state: FSMContext):
         )
         await callback.message.answer(explanation)
 
+        new_question_index = question_index + 1
+        await state.update_data(current_question_index=new_question_index)
+
         # Переход к следующему вопросу или завершение
-        if is_correct:
-            await state.update_data(current_question_index=question_index + 1)
+        if new_question_index < len(questions):
             await ask_current_question(callback.message, state)
         else:
             await complete_category(callback.message, state)
@@ -1036,6 +1052,11 @@ async def get_user_points(user_id: int) -> int:
 async def complete_category(message: types.Message, state: FSMContext):
     data = await state.get_data()
     category_id = data.get('current_category')
+
+    await state.update_data(
+        used_categories=[],
+        current_category=None  # Важно сбросить текущую категорию
+    )
 
     if category_id:
         await QuizManager.complete_category(message.chat.id, category_id)
@@ -1163,6 +1184,9 @@ async def handle_category_selection(callback: types.CallbackQuery, state: FSMCon
         encoded_category = callback.data.split("_", 1)[1]
         category_id = urllib.parse.unquote_plus(encoded_category)
         completed = await QuizManager.get_completed_categories(callback.from_user.id)
+
+        data = await state.get_data()
+        used_categories = data.get('used_categories', [])
         print(f"User ID from message: {callback.from_user.id}")
 
         logger.info(f"Selected category: {category_id}")
@@ -1176,12 +1200,15 @@ async def handle_category_selection(callback: types.CallbackQuery, state: FSMCon
             await callback.answer("⚠️ Категория не найдена")
             return
 
+        if used_categories:
+            await callback.answer("🚫 Завершите текущую категорию сначала!", show_alert=True)
+            return
         # Обновляем состояние
         await state.set_state(QuizStates.ANSWERING_QUESTION)
         await state.update_data(
             current_category=category_id,
             current_question_index=0,
-            used_categories=[]
+            used_categories=[category_id]
         )
 
         # Удаляем предыдущее сообщение
