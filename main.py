@@ -166,13 +166,68 @@ async def show_rating(callback: types.CallbackQuery):
     await callback.message.answer(rating_text)
     await callback.answer()
 
+# Клавиатура для изменения климата
+def climate_keyboard():
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        types.InlineKeyboardButton(
+            text="Глобальная карта климата",
+            url="https://map.srcms.space/"
+        ),
+        types.InlineKeyboardButton(
+            text="Климат в Москве",
+            callback_data="climate_moscow"
+        )
+    )
+    builder.row(
+        types.InlineKeyboardButton(
+            text="⬅️ Назад",
+            callback_data="eco_back"
+        )
+    )
+    return builder.as_markup()
+
+# Клавиатура для качества воздуха
+def air_quality_keyboard():
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        types.InlineKeyboardButton(
+            text="Глобальная карта AQI",
+            url="https://www.iqair.com/ru/earth?nav="
+        )
+    )
+    builder.row(
+        types.InlineKeyboardButton(
+            text="⬅️ Назад",
+            callback_data="eco_back"
+        )
+    )
+    return builder.as_markup()
+
+# Клавиатура для лесных пожаров
+def wildfires_keyboard():
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        types.InlineKeyboardButton(
+            text="Карта лесных пожаров",
+            url="https://firms.modaps.eosdis.nasa.gov/map/#d:24hrs;@97.1,33.5,3.0z"
+        )
+    )
+    builder.row(
+        types.InlineKeyboardButton(
+            text="⬅️ Назад",
+            callback_data="eco_back"
+        )
+    )
+    return builder.as_markup()
+
 def eco_categories_kb():
     builder = ReplyKeyboardBuilder()
     buttons = [
         "Лесные пожары",
         "Загрязнение воздуха",
         "Изменение климата",
-        "⬅️ Назад"
+        "Назад в главное меню"
     ]
     for btn in buttons:
         builder.add(types.KeyboardButton(text=btn))
@@ -224,24 +279,24 @@ def moscow_climate_kb():
 async def handle_wildfires(message: types.Message):
     await message.answer(
         "🔥 Мониторинг лесных пожаров\n\n"
-        "Я могу показать актуальные данные о лесных пожарах.",
-        reply_markup=wildfires_kb()
+        "Актуальные данные о лесных пожарах:",
+        reply_markup=wildfires_keyboard()
     )
 
 @dp.message(F.text == "Загрязнение воздуха")
 async def handle_air_pollution(message: types.Message):
     await message.answer(
         "🌫️ Качество воздуха\n\n"
-        "Я могу показать актуальную информацию о качестве воздуха в вашем городе.",
-        reply_markup=air_pollution_kb()
+        "Я могу показать актуальную информацию о качестве воздуха:",
+        reply_markup=air_quality_keyboard()
     )
 
 @dp.message(F.text == "Изменение климата")
-async def handle_climate_change(message: types.Message):
+async def handle_climate(message: types.Message):
     await message.answer(
         "🌡 Данные о климате\n\n"
-        "🌍 Я могу показать изменения температуры и климатические тренды.",
-        reply_markup=climate_change_kb()
+        "🌍 Я могу показать изменения температуры и климатические тренды:",
+        reply_markup=climate_keyboard()
     )
 
 @dp.message(F.text == "Климат в Москве")
@@ -264,6 +319,30 @@ async def handle_moscow_climate(message: types.Message):
         "🔗 Подробнее: https://climate.nasa.gov/"
     )
     await message.answer(response, reply_markup=moscow_climate_kb())
+
+BACK_ECO_DATA = "back_to_eco_main"
+
+def back_to_eco_kb() -> types.InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.add(
+        types.InlineKeyboardButton(
+            text="⬅️ Назад",
+            callback_data=BACK_ECO_DATA
+        )
+    )
+    return builder.as_markup()
+
+@dp.callback_query(F.data == BACK_ECO_DATA)
+async def handle_eco_back(callback: types.CallbackQuery):
+    try:
+        await callback.message.edit_text(
+            "🌍 Экологический мониторинг\nВыберите категорию:",
+            reply_markup=eco_categories_kb()
+        )
+        await callback.answer()
+    except Exception as e:
+        await callback.answer("⚠️ Ошибка при возврате в меню", show_alert=True)
+        logging.error(f"Back error: {e}")
 
 # Обработчик кнопки "Назад" для всех уровней
 @dp.message(F.text == "⬅️ Назад")
