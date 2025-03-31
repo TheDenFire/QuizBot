@@ -2,16 +2,18 @@ import os
 import logging
 import traceback
 import urllib
-from datetime import datetime
 import asyncpg
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram import Bot, Dispatcher, types, F, Router
+from aiogram.client import bot
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
-from aiogram.filters import Command, or_f, state
+from aiogram.filters import Command, or_f
 from aiogram.utils.chat_action import ChatActionSender
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
-from aiohttp import ClientError, TCPConnector
+
+from routers.quest_router import quest_router
+
+dp = Dispatcher()
 
 # Настройка логгирования
 logging.basicConfig(level=logging.INFO)
@@ -23,8 +25,6 @@ DB_USER = os.getenv("DATABASE_USER")
 DB_PASSWORD = os.getenv("DATABASE_PASSWORD")
 
 # Инициализация бота
-bot = Bot(token=os.getenv("BOT_TOKEN"))
-dp = Dispatcher()
 
 class SurveyStates(StatesGroup):
     QUESTION = State()
@@ -354,7 +354,7 @@ async def handle_buttons(message: types.Message):
 
 
 # ... предыдущий импорт ...
-from aiogram.types import URLInputFile, InlineKeyboardButton
+from aiogram.types import URLInputFile
 
 
 # Добавляем новые состояния
@@ -664,122 +664,14 @@ async def cancel_news_publish(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-class QuestStates(StatesGroup):
-    CITY_INPUT = State()
-    CONFIRMATION = State()
-    QUEST_IN_PROGRESS = State()
-    WAITING_PHOTO = State()
 
 
-# Обработчик кнопки "Квест-трип по городу"
-@dp.message(F.text == "🗺️ Квест-трип по городу")
-async def start_quest(message: types.Message, state: FSMContext):
-    await state.set_state(QuestStates.CITY_INPUT)
-    await message.answer(
-        "Приветствую тебя на пути изучения российской космонавтики! 🚀\n\n"
-        "Тебя ждет путешествие по млечному пути космической истории внутри твоего города.\n\n"
-        "Введи его название:"
-    )
+
+# КВЕСТ ТРИП
 
 
-# Обработчик ввода города
-@dp.message(QuestStates.CITY_INPUT)
-async def process_city(message: types.Message, state: FSMContext):
-    await state.update_data(city=message.text)
-
-    builder = InlineKeyboardBuilder()
-    builder.button(text="🚀 Запуск", callback_data="start_quest_confirmed")
-
-    await message.answer(
-        f"Прекрасно! Техника настроена, ракета готова к запуску!\n"
-        f"Мы посетим 6 мест, решим 5 загадок и вместе погрузимся в космос твоего города. "
-        f"А по окончанию путешествия тебя ждет подарок! Готов отправиться?",
-        reply_markup=builder.as_markup()
-    )
-    await state.set_state(QuestStates.CONFIRMATION)
 
 
-# Обработчик подтверждения начала квеста
-@dp.callback_query(QuestStates.CONFIRMATION, F.data == "start_quest_confirmed")
-async def start_quest_confirmed(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.delete()
-    await send_quest_task(callback.message, state, task_number=1)
-    await state.set_state(QuestStates.QUEST_IN_PROGRESS)
-
-
-# Функция отправки задания
-async def send_quest_task(message: types.Message, state: FSMContext, task_number: int):
-    tasks = {
-        1: {
-            "text": "Он сказал: «Поехали»! – И вот первое задание квеста:\n\n"
-                    "🗽 Задание 1: Космический Памятник\n\n"
-                    "Найди в городе памятник или монумент, связанный с космонавтами или учеными.",
-            "button": "Нашел ✅"
-        }
-    }
-
-    task = tasks.get(task_number)
-    if not task:
-        return await finish_quest(message, state)
-
-    builder = ReplyKeyboardBuilder()
-    builder.button(text=task["button"])
-
-    await message.answer(
-        task["text"],
-        reply_markup=builder.as_markup(resize_keyboard=True)
-    )
-    await state.update_data(current_task=task_number)
-
-
-# Обработчик кнопки "Нашел ✅"
-@dp.message(F.text == "Нашел ✅", QuestStates.QUEST_IN_PROGRESS)
-async def found_monument(message: types.Message, state: FSMContext):
-    await state.set_state(QuestStates.WAITING_PHOTO)
-    await message.answer(
-        "Теперь сделай фотографию у памятника, отправь ее мне с ответом на вопрос: "
-        "«Кто изображен на памятнике и что он сделал для космонавтики?»",
-        reply_markup=types.ReplyKeyboardRemove()
-    )
-
-
-# Обработчик фото и ответа
-@dp.message(QuestStates.WAITING_PHOTO, F.photo)
-async def process_quest_answer(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-
-    # Сохраняем в базу данных
-    conn = await get_db()
-    try:
-        await conn.execute(
-            "INSERT INTO quest_submissions "
-            "(user_id, city, task_number, photo_id, answer, submission_time) "
-            "VALUES ($1, $2, $3, $4, $5, $6)",
-            message.from_user.id,
-            data['city'],
-            data['current_task'],
-            message.photo[-1].file_id,
-            message.caption or "",
-            datetime.now()
-        )
-
-        # Начисляем баллы
-        await conn.execute(
-            "UPDATE users SET points = points + 10 WHERE id = $1",
-            message.from_user.id
-        )
-    finally:
-        await conn.close()
-
-    # Уведомляем админов
-    await notify_admins(message, state)
-
-    await message.answer(
-        "✅ Отлично! Ты прошел первый этап квеста!\n"
-        "Следующее задание появится совсем скоро...",
-        reply_markup=main_menu_kb()
-    )
-    await state.clear()
 
 
 # Функция уведомления админов
@@ -811,23 +703,6 @@ async def notify_admins(message: types.Message, state: FSMContext):
 
     finally:
         await conn.close()
-
-
-# Функция завершения квеста
-async def finish_quest(message: types.Message, state: FSMContext):
-    await message.answer(
-        "🎉 Поздравляем! Ты успешно завершил квест-трип!\n"
-        "Твой подарок: +50 баллов в профиль!\n"
-        "Следующий квест появится совсем скоро...",
-        reply_markup=main_menu_kb()
-    )
-    await state.clear()
-
-
-
-
-
-
 
 
 quiz_categories = {
@@ -1079,43 +954,6 @@ async def resetquiz_command(message: types.Message):
     await QuizManager.reset_all_progress()
     await message.answer("♻ Прогресс всех пользователей сброшен!")
 
-
-# @dp.callback_query(QuizStates.CATEGORY_SELECTION, F.data.startswith("cat_"))
-# async def select_category(callback: types.CallbackQuery, state: FSMContext):
-#     try:
-#         # Декодируем category_id
-#         encoded_category = callback.data.split("_", 1)[1]
-#         category_id = urllib.parse.unquote_plus(encoded_category)
-#
-#         logger.debug(f"Selected category ID: {category_id}")
-#
-#         if category_id not in quiz_categories:
-#             logger.error(f"Category {category_id} not found in quiz_categories")
-#             await callback.answer("Категория не найдена!")
-#             return
-#
-#         # Обновляем состояние
-#         await state.update_data(
-#             current_category=category_id,
-#             current_question_index=0,
-#             last_message_id=None
-#         )
-#
-#         # Удаляем предыдущее сообщение
-#         try:
-#             await callback.message.delete()
-#         except Exception as e:
-#             logger.error(f"Error deleting message: {e}")
-#
-#         # Запускаем первый вопрос
-#         await ask_current_question(callback.message, state)
-#         await callback.answer()
-#
-#     except Exception as e:
-#         logger.error(f"Error in select_category: {str(e)}", exc_info=True)
-#         await callback.answer("⚠️ Ошибка при выборе категории")
-
-
 async def ask_first_question(message: types.Message, state: FSMContext):
     data = await state.get_data()
     category = quiz_categories[data['current_category']]
@@ -1251,13 +1089,16 @@ class QuizManager:
         conn = await get_db()
         await conn.execute("TRUNCATE TABLE completed_categories")
 
-@dp.message()
-async def unknown_message(message: types.Message):
-    logger.warning(f"Unhandled message: {message.text}")
-    await message.answer("Используйте кнопки меню для навигации")
-
+# @dp.message()
+# async def unknown_message(message: types.Message):
+#     logger.warning(f"Unhandled message: {message.text}")
+#     await message.answer("Используйте кнопки меню для навигации")
 
 async def main():
+    bot = Bot(token=os.getenv("BOT_TOKEN"))
+
+    bot = Bot(token=os.getenv("BOT_TOKEN"))
+    dp.include_router(quest_router)
     conn = await get_db()
     try:
         await conn.execute('''
