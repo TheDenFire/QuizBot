@@ -787,7 +787,7 @@ async def finish_quest(message: types.Message, state: FSMContext):
     finally:
         await conn.close()
 
-    await message.answer("🎉 Квест завершен! Спасибо за участие!")
+    await message.answer("🎉 Квест завершен! Спасибо за участие!\n\nДля выхода напишите /start")
     await state.clear()
 
 def get_exit_keyboard():

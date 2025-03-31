@@ -3,7 +3,7 @@ import logging
 import traceback
 import urllib
 import asyncpg
-from aiogram import Bot, Dispatcher, types, F, Router
+from aiogram import Bot, Dispatcher, types, F, Router, filters
 from aiogram.client import bot
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
@@ -14,7 +14,8 @@ from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
 from routers.quest_router import quest_router
 
 dp = Dispatcher()
-
+bot = Bot(token=os.getenv("BOT_TOKEN"))
+dp.include_router(quest_router)
 # Настройка логгирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -165,13 +166,113 @@ async def show_rating(callback: types.CallbackQuery):
     await callback.message.answer(rating_text)
     await callback.answer()
 
-# Обработчики для других кнопок
-@dp.message(F.text.in_({
-    "🌍 Экологические данные",
-}))
-async def handle_buttons(message: types.Message):
-    await message.answer("TODO ⏳", reply_markup=main_menu_kb())
+def eco_categories_kb():
+    builder = ReplyKeyboardBuilder()
+    buttons = [
+        "Лесные пожары",
+        "Загрязнение воздуха",
+        "Изменение климата",
+        "⬅️ Назад"
+    ]
+    for btn in buttons:
+        builder.add(types.KeyboardButton(text=btn))
+    builder.adjust(1, 1, 1, 1)  # По одной кнопке в ряду
+    return builder.as_markup(resize_keyboard=True, one_time_keyboard=True)
 
+# Обработчик для кнопки "Экологические данные"
+@dp.message(F.text == "🌍 Экологические данные")
+async def handle_eco_data(message: types.Message):
+    await message.answer(
+        "🌍 Экологический мониторинг\n\n"
+        "Я могу показать данные о состоянии окружающей среды в реальном времени! Выберите, что вас интересует:"
+    )
+    await message.answer("Выберите категорию ниже:", reply_markup=eco_categories_kb())
+
+# Клавиатура для лесных пожаров
+def wildfires_kb():
+    builder = ReplyKeyboardBuilder()
+    builder.add(types.KeyboardButton(text="Карта лесных пожаров", url="https://fires.ru"))
+    builder.add(types.KeyboardButton(text="⬅️ Назад"))
+    builder.adjust(1, 1)
+    return builder.as_markup(resize_keyboard=True)
+
+# Клавиатура для загрязнения воздуха
+def air_pollution_kb():
+    builder = ReplyKeyboardBuilder()
+    builder.add(types.KeyboardButton(text="Глобальная карта AQI", url="https://aqicn.org/map/world"))
+    builder.add(types.KeyboardButton(text="⬅️ Назад"))
+    builder.adjust(1, 1)
+    return builder.as_markup(resize_keyboard=True)
+
+# Клавиатура для изменения климата
+def climate_change_kb():
+    builder = ReplyKeyboardBuilder()
+    builder.add(types.KeyboardButton(text="Глобальная карта климата", url="https://climate.nasa.gov"))
+    builder.add(types.KeyboardButton(text="Климат в Москве"))
+    builder.add(types.KeyboardButton(text="⬅️ Назад"))
+    builder.adjust(2, 1)
+    return builder.as_markup(resize_keyboard=True)
+
+# Клавиатура для климата Москвы
+def moscow_climate_kb():
+    builder = ReplyKeyboardBuilder()
+    builder.add(types.KeyboardButton(text="⬅️ Назад"))
+    return builder.as_markup(resize_keyboard=True)
+
+# Обработчики
+@dp.message(F.text == "Лесные пожары")
+async def handle_wildfires(message: types.Message):
+    await message.answer(
+        "🔥 Мониторинг лесных пожаров\n\n"
+        "Я могу показать актуальные данные о лесных пожарах.",
+        reply_markup=wildfires_kb()
+    )
+
+@dp.message(F.text == "Загрязнение воздуха")
+async def handle_air_pollution(message: types.Message):
+    await message.answer(
+        "🌫️ Качество воздуха\n\n"
+        "Я могу показать актуальную информацию о качестве воздуха в вашем городе.",
+        reply_markup=air_pollution_kb()
+    )
+
+@dp.message(F.text == "Изменение климата")
+async def handle_climate_change(message: types.Message):
+    await message.answer(
+        "🌡 Данные о климате\n\n"
+        "🌍 Я могу показать изменения температуры и климатические тренды.",
+        reply_markup=climate_change_kb()
+    )
+
+@dp.message(F.text == "Климат в Москве")
+async def handle_moscow_climate(message: types.Message):
+    response = (
+        "🌆 Климатические изменения в Москве\n\n"
+        "📅 Последние 5 лет:\n\n"
+        "🌡 Средняя температура:\n"
+        "2020: +7.3°C 🌡\n"
+        "2025: +8.1°C 📈\n"
+        "📊 Разница: +0.8°C\n\n"
+        "💧 Уровень осадков:\n"
+        "2020: 707 мм ☔\n"
+        "2025: 750 мм 📈\n"
+        "📊 Разница: +6%\n\n"
+        "🔥 Количество аномально жарких дней:\n"
+        "2020: 14 дней ☀️\n"
+        "2025: 23 дня 🔥\n"
+        "📊 Разница: +9 дней\n\n"
+        "🔗 Подробнее: https://climate.nasa.gov/"
+    )
+    await message.answer(response, reply_markup=moscow_climate_kb())
+
+# Обработчик кнопки "Назад" для всех уровней
+@dp.message(F.text == "⬅️ Назад")
+async def handle_back(message: types.Message):
+    # Определяем предыдущее меню по контексту
+    if message.reply_markup == moscow_climate_kb():
+        await handle_climate_change(message)
+    else:
+        await handle_eco_data(message)
 
 @dp.message(SurveyStates.QUESTION)
 async def process_answer(message: types.Message, state: FSMContext):
@@ -799,7 +900,10 @@ async def show_category_selection(message: types.Message, state: FSMContext):
     data = await state.get_data()
     user_id = message.chat.id
     completed = await QuizManager.get_completed_categories(user_id)
-    used_categories = data.get('used_categories', [])  # Добавляем получение used_categories
+    used_categories = data.get('used_categories', [])
+
+    last_message_id = data.get('last_message_id')
+
     print(f"show_category_selection: User ID from message: {user_id}")
     print(f"[DEBUG] Completed categories: {completed}")
 
@@ -814,23 +918,16 @@ async def show_category_selection(message: types.Message, state: FSMContext):
 
         button_text = f"{'✅ ' if is_completed else ''}{category['title']}"
 
-        # Если категория уже используется, делаем кнопку неактивной
         builder.add(types.InlineKeyboardButton(
             text=button_text,
             callback_data=f"cat_{safe_category_id}" if not is_used else "ignore", # Используем нормализованный ID
             )
         )
 
-    # builder.row(types.InlineKeyboardButton(
-    #     text="⬅️ Назад",
-    #     callback_data="back_to_main"
-    # ))
-
-
     builder.adjust(1)
 
     try:
-        text = "🎯 Выберите категорию:" + ("\n\n✅ Пройденные категории отмечены" if data.get('used_categories') else "")
+        text = "🎯 Выберите категорию:" + ("\n\n✅ Пройденные категории отмечены" if used_categories else "")
 
         if data.get('last_message_id'):
             await bot.edit_message_text(
@@ -1097,8 +1194,6 @@ class QuizManager:
 async def main():
     bot = Bot(token=os.getenv("BOT_TOKEN"))
 
-    bot = Bot(token=os.getenv("BOT_TOKEN"))
-    dp.include_router(quest_router)
     conn = await get_db()
     try:
         await conn.execute('''
